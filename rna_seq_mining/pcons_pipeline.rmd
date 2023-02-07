@@ -1,0 +1,122 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+options(stringsAsFactors = FALSE)
+library(DESeq2)
+library(tidyverse)
+library(gplots)
+library(RColorBrewer)
+library(limma)
+library(ggbeeswarm)
+library(patchwork)
+```
+
+```{r}
+sampleinfo <- read_csv("data/SraRunTable.txt")
+sampleinfo <- sampleinfo %>% dplyr::rename(type = "Sample Name")
+```
+
+
+```{r}
+seqdata <- read_tsv("data/compiled.featureCounts", comment = "#")
+seqdata
+```
+
+```{r}
+countdata <- seqdata %>%
+  column_to_rownames("Geneid") %>%
+  rename_all(str_remove, ".bam") %>%
+  dplyr::select(sampleinfo$Run) %>%
+  as.matrix()
+```
+
+```{r}
+keep <- rowSums(countdata) > 32
+countdata <- countdata[keep, ]
+dim(countdata)
+```
+
+```{r}
+# create the design formula
+design <- as.formula(~0 + type)
+# create the DESeqDataSet object
+```
+
+```{r}
+ddsObj <- DESeqDataSetFromMatrix(countData = countdata,
+                              colData = sampleinfo,
+                              design = design)
+
+ddsObj <- estimateSizeFactors(ddsObj)
+```
+
+```{r}
+vsd <- vst(ddsObj, blind = FALSE)
+rld <- rlog(ddsObj, blind = FALSE)
+```
+
+```{r}
+gene_names <- rownames(assay(vsd))
+vsd_means <- rowMeans2(assay(vsd))
+vsd_sds <- rowSds(assay(vsd))
+vsd_max <- rowMaxs(assay(vsd))
+vsd_min <- rowMins(assay(vsd))
+
+rlog_sds <- rowSds(assay(rld))
+rlog_means <- rowMeans2(assay(rld))
+rlog_max <- rowMaxs(assay(rld))
+rlog_min <- rowMins(assay(rld))
+
+vsddf <- tibble(gene_names,
+                vsd_means,
+                vsd_sds,
+                vsd_max,
+                vsd_min,
+                rlog_means,
+                rlog_sds,
+                rlog_max,
+                rlog_min)
+```
+
+```{r}
+rlog_mean_tile <- quantile(vsddf$rlog_means, c(.95
+                                               )) [[1]]
+rlog_sd_tile <- quantile(vsddf$rlog_sds, c(.30)) [[1]]
+
+vsd_mean_tile <- quantile(vsddf$vsd_means, c(.95
+                                             )) [[1]]
+vsd_sd_tile <- quantile(vsddf$vsd_sds, c(.30)) [[1]]
+
+vsddf$CV <- vsddf$vsd_means / vsddf$vsd_sds
+
+rlog_highlight <- vsddf %>%
+  dplyr::filter(rlog_means > rlog_mean_tile & rlog_sds < rlog_sd_tile)
+vsd_highlight <- vsddf %>%
+  dplyr::filter(vsd_means > vsd_mean_tile & vsd_sds < vsd_sd_tile)
+
+thresh_house <- c(rlog_highlight$gene_names,
+                  vsd_highlight$gene_names) %>% unique()
+
+AT_housekeeping <- vsddf %>% dplyr::filter(gene_names %in% thresh_house)
+
+AT_housekeeping %>% arrange(by_group = desc(CV)) %>% write_csv("output/AT_cons.csv")
+```
+
+```{r fig.height=2}
+rlog_graph <- ggplot(vsddf, aes(x = rlog_means, y = rlog_sds)) +
+  geom_point(size = .5, shape = 1, color = "gray20", alpha = 0.5) +
+  theme_linedraw() +
+  xlab("") +
+  ylab("") +
+  geom_point(data = rlog_highlight,
+             aes(x = rlog_means, y = rlog_sds),
+             color = "orangered2", size = 0.25) +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(plot.margin = unit(c(5, 5, 5, 5), "pt")) +
+  theme(aspect.ratio = .5) + theme(panel.grid = element_blank())
+
+ggsave("output/mean_v_variance_rlog.pdf", rlog_graph)
+```
